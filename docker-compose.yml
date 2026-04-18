@@ -5,12 +5,8 @@
 # All build contexts are relative to this directory.
 #
 # Usage (from EXBanka-2-Infrastructure/):
-#   cp .env.example .env   # fill in secrets (JWT_* bez razmaka oko =)
-#   docker compose up --build -d
-#
-# Podrazumevani host portovi: user :8082, bank :8083, frontend :3001, Postgres :5433
-# Frontend Nginx: /api → user-service, /api/bank → bank-service (trading, računi).
-# Backend servisi nemaju healthcheck — depends_on je service_started da compose ne čeka u nedogled.
+#   cp .env.example .env   # fill in secrets
+#   docker compose up --build
 # ============================================================
 
 services:
@@ -100,10 +96,6 @@ services:
       DB_HOST: db
       DB_PORT: 5432
       JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET}
-      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:-change-me-refresh-secret}
-      JWT_ACTIVATION_SECRET: ${JWT_ACTIVATION_SECRET:-change-me-activation-secret}
-      # Sinhronizacija aktuara sa bankom (opciono)
-      BANK_SERVICE_ADDR: ${BANK_SERVICE_ADDR:-http://bank-service:8080}
       DB_USER: ${POSTGRES_USER}
       DB_PASSWORD: ${POSTGRES_PASSWORD}
       DB_NAME: ${POSTGRES_DB}
@@ -134,8 +126,6 @@ services:
     environment:
       HTTP_ADDR: "0.0.0.0:8080" 
       GRPC_ADDR: "0.0.0.0:50051"
-      # gRPC ka user-service (isti port kao unutar user kontejnera)
-      USER_SERVICE_ADDR: ${USER_SERVICE_ADDR:-user-service:50051}
       JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET}
       DB_HOST: db
       DB_PORT: 5432
@@ -154,14 +144,13 @@ services:
       LISTING_REFRESH_INTERVAL_MINUTES: ${LISTING_REFRESH_INTERVAL_MINUTES:-15}
       LISTING_REQUIRE_LIVE_QUOTES: ${LISTING_REQUIRE_LIVE_QUOTES:-false}
     depends_on:
-      user-service:
-        condition: service_started
       db:
         condition: service_healthy
       rabbitmq:
         condition: service_healthy
       migrate-bank:
         condition: service_completed_successfully
+      # --- DODATO ZA KARTICE ---
       redis:
         condition: service_healthy
       notification-service:
@@ -220,19 +209,23 @@ services:
         # /api keeps traffic on Nginx so the proxy rule rewrites the path.
         VITE_API_BASE_URL: ${VITE_API_BASE_URL:-/api}
         VITE_MOCK_MODE: ${VITE_MOCK_MODE:-false}
-        VITE_APP_ENV: ${VITE_APP_ENV:-production}
-        VITE_ACCESS_TOKEN_TTL_MS: ${VITE_ACCESS_TOKEN_TTL_MS:-900000}
     image: exbanka-frontend:latest
     container_name: exbanka_frontend
     restart: unless-stopped
     ports:
-      - "${FRONTEND_HTTP_PORT:-3001}:80"
-    # nginx.conf: /api/bank/* → bank-service, /api/* → user-service (oba na bank-net).
+      - "3001:80"
+    # nginx.conf proxies /api/ → http://host.docker.internal:8082/
+    # extra_hosts resolves that name to the Docker host so the request
+    # reaches user-service via its published port (8082).
+    #
+    # To route purely over bank-net without touching the host, change the
+    # upstream in EXBanka-2-Frontend/nginx.conf to:
+    #   proxy_pass http://user-service:8080/;
+    # and remove the extra_hosts block below.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
-      user-service:
-        condition: service_started
-      bank-service:
-        condition: service_started
+      - user-service
     networks:
       - bank-net
 
